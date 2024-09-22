@@ -1,8 +1,8 @@
 # Raspberry Pi
 
-The following is a step-by-step guide on how to setup a brand-new Raspberry Pi 4 as a wireless
-hotspot with internet access through a remote VPN server. The overall setup looks something like
-this:
+The following is a step-by-step guide on how to setup a brand-new Raspberry Pi 4 as a dual-band
+wireless hotspot with internet access through a remote VPN server. The overall setup looks something
+like this:
 
 ![image](./assets/diagram.png)
 
@@ -12,24 +12,26 @@ reaching the Internet.
 
 ## Setup Guide
 
-This document assumes that the network device used as a wireless access point is named `ap0` and the
-network device connected to the internet as `inet0`.
+This document assumes that the network device used for a 2.4GHz wireless access point is named
+`ap0`, the network device used for a 5GHz wireless access point - `ap1`, and the network device
+connected to the internet - `inet0`. Keep in mind that the selected hardware must support the
+frequency on which it operates.
 
 In order to set appropriate adapter names in your system, add the following to
 `/etc/udev/rules.d/70-netnaming.rules`:
 
 ```
 SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="<ap0   mac address>", NAME="ap0"
+SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="<ap1   mac address>", NAME="ap1"
 SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="<inet0 mac address>", NAME="inet0"
 ```
 
-Additionally, make sure that the access point device is not used to connect to the internet since we
-do not want to manage two separate networks by a single interface. We can do that by adding the
-following to `/etc/NetworkManager/conf.d/unmanaged.conf`:
+Additionally, make sure that the access point devices are not used to connect to the internet. We
+can do that by adding the following to `/etc/NetworkManager/conf.d/unmanaged.conf`:
 
 ```
 [keyfile]
-unmanaged-devices=interface-name:ap0
+unmanaged-devices=interface-name:ap0,interface-name:ap1
 ```
 
 After that, restart `NetworkManager` and connect to the internet using the appropriate network
@@ -52,7 +54,48 @@ Then, run the following command to ensure all of the tools required for this set
 sudo apt-get install vim ufw hostapd dnsmasq dhcpcd
 ```
 
-### Setup the Wi-Fi link layer.
+### Bridge network interfaces
+
+When new devices connect to our Raspberry Pi, they will have to choose between the 2.4GHz and 5GHz
+frequency bands. These bands are managed by separate network interfaces, meaning that devices
+connected on different frequencies will reside on separate internal networks and therefore unable to
+communicate with each other directly:
+
+![image](./assets/diagram-2.png)
+
+For this reason, we need to [bridge](https://en.wikipedia.org/wiki/Network_bridge) these network
+interfaces so that internet traffic can flow freely between them.
+
+#### Establish a network bridge
+
+Add the following to `/etc/network/interfaces`:
+
+```
+auto br0
+iface br0 inet manual
+    bridge_stp off
+    # bridge_ports ...
+```
+
+If you have additional network devices or Ethernet connections, simply add them to the
+`bridge_ports` field. Note that it is not possible to bridge wireless interfaces.
+
+#### Assign static IP address to the network bridge
+
+Append the lines below to the end of `/etc/dhcpcd.conf`:
+
+```
+interface br0
+    static ip_address=5.9.0.1
+    nohook
+```
+
+You can change `5.9.0.1` to any other address as long as it does not conflict with existing
+addresses and subnets on your system.
+
+You may need to restart `dhcpcd.service` after that.
+
+### Setup the Wi-Fi link layer
 
 This step is necessary in order to enable wireless clients to associate to our access point and
 exchange IP packets with it.
@@ -82,30 +125,15 @@ net.ipv6.conf.all.disable_ipv6 = 1
 
 At this point, restart the `systemd-sysctl` service to apply the changes.
 
-#### Assign static IP to `ap0`
-
-Append the lines below to the end of `/etc/dhcpcd.conf`:
-
-```
-interface ap0
-    static ip_address=5.9.0.1
-    nohook
-```
-
-You can change `5.9.0.1` to any other address as long as it does not conflict with existing
-addresses and subnets on your system.
-
-You may need to restart `dhcpcd.service` after that.
-
 #### Configure DHCP (+DNS)
 
-At this point, we need a way to assign IP addresses to new hotspot clients. For that, we have
-installed `dnsmasq` earlier. It will additionally handle incoming DNS requests for us.
+At this point, we need a way to assign IP addresses to new access point/Ethernet devices. For that,
+we have installed `dnsmasq` earlier. It will additionally handle incoming DNS requests.
 
 The configuration file at `/etc/dnsmasq.conf` should look something like this:
 
 ```
-interface=ap0
+interface=br0
 bind-dynamic
 
 listen-address=127.0.0.1
@@ -119,41 +147,115 @@ As always, don't forget to restart `dnsmasq.service`.
 
 #### Setup hostapd
 
-Lastly, we must configure the `hostapd` service that will turn our network device into the desired
-access point.
+Lastly, we must configure `hostapd` to use our network devices as access points.
 
-This is what I have in `/etc/hostapd/hostapd.conf`:
+For 5GHz frequency band, add the following to `/etc/hostapd/ap0.conf`:
 
 ```
 interface=ap0
-
+bridge=br0
 driver=nl80211
-hw_mode=a
-channel=0
-ieee80211d=1
-country_code=DE
-ieee80211n=1
-ieee80211ac=1
+
+ssid=raspi5
+
 ieee80211d=0
-ieee80211h=0
+country_code=DE
+
+channel=0
+hw_mode=a
+
 wmm_enabled=1
-require_nt=1
-ht_capab=[MAX-AMSDU-3839][HT40+][SHORT-GI-20][SHORT-GI-40][DSSS_CCK-40]
+ieee80211n=1
+ht_capab=[HT40+][SMPS-STATIC][SHORT-GI-20][SHORT-GI-40][MAX-AMSDU-3839][DSSS_CCK-40]
+require_ht=1
+
+ieee80211ac=1
+vht_capab=[SHORT-GI-80][SU-BEAMFORMEE]
 require_vht=1
-vht_capab=[MAX-AMSDU-3839][SHORT-GI-80]
 vht_oper_chwidth=1
+
+# Do not isolate clients
+ap_isolate=0
+
+# Accept unless in deny list
+macaddr_acl=0
+#accept_mac_file=/etc/hostapd/ap0.accept
+#deny_mac_file=/etc/hostapd/ap0.deny
+
+wpa=2
+wpa_passphrase=fivenine
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=CCMP
+rsn_pairwise=CCMP
+
+auth_algs=3
+
+# Disable WPS
+wps_state=0
+
+# hostapd event logger configuration
+logger_syslog=-1
+logger_syslog_level=0
+logger_stdout=-1
+logger_stdout_level=0
+```
+
+For 2.4GHz frequency band, add the following to `/etc/hostapd/ap1.conf`:
+
+```
+interface=ap1
+bridge=br0
+driver=nl80211
 
 ssid=raspi
 
-auth_algs=1
+ieee80211d=0
+country_code=DE
+
+channel=1
+hw_mode=g
+
+wmm_enabled=0
+ieee80211n=1
+ht_capab=[HT40+][SHORT-GI-20][SHORT-GI-40][MAX-AMSDU-7935][DSSS_CCK-40]
+require_ht=0
+
+ieee80211ac=0
+# vht_capab=[SHORT-GI-80][SU-BEAMFORMEE]
+# require_vht=1
+# vht_oper_chwidth=1
+
+# Do not isolate clients
+ap_isolate=0
+
+# Accept unless in deny list
+macaddr_acl=0
+#accept_mac_file=/etc/hostapd/ap1.accept
+#deny_mac_file=/etc/hostapd/ap1.deny
+
 wpa=2
-wpa_pairwise=CCMP
+wpa_passphrase=fivenine
 wpa_key_mgmt=WPA-PSK
-wpa_passphrase=********
+wpa_pairwise=CCMP
+rsn_pairwise=CCMP
+
+auth_algs=3
+
+# Disable WPS
+wps_state=0
+
+# hostapd event logger configuration
+logger_syslog=-1
+logger_syslog_level=0
+logger_stdout=-1
+logger_stdout_level=0
 ```
 
-Keep in mind that certain fields may depend on the network device in use. See
-[docs](https://wireless.wiki.kernel.org/en/users/Documentation/hostapd) for more information.
+After that, you can start `hostapd@ap0.service` and `hostapd@ap1.service`. `raspi5` and `raspi`
+should appear on the wireless network list.
+
+Keep in mind that certain fields in the configuration above may depend on the network device in use.
+See [docs](https://wireless.wiki.kernel.org/en/users/Documentation/hostapd) for more information.
 
 ### Network configuration
 
@@ -211,7 +313,7 @@ lost, the tunnel closes, preventing packets from reaching the Internet.
 
 #### Internet access
 
-In the final step, we just need to enable NAT on `tun0` and allow packets from `ap0` to reach it.
+In the final step, we just need to enable NAT on `tun0` and allow packets from `br0` to reach it.
 
 To do that, add the following to `/etc/ufw/before.rules` just before the filter rules.
 
@@ -225,7 +327,7 @@ COMMIT
 And finally, append this line below right after the filter rules:
 
 ```
--A FORWARD -i ap0 -o tun0 -j ACCEPT
+-A FORWARD -i br0 -o tun0 -j ACCEPT
 ```
 
-Now, AP clients should have internet access through a remote VPN server.
+Now, AP/Ethernet clients should have internet access through a remote VPN server.
