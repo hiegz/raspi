@@ -1,0 +1,3 @@
+SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="d8:3a:dd:e1:f5:30", NAME="ap0"
+SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="64:70:02:1e:a6:ee", NAME="ap1"
+SUBSYSTEM=="net", ACTION=="add", ATTR{address}=="c8:78:7d:f3:48:ba", NAME="internet0"
