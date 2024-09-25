@@ -1,0 +1,16 @@
+# interfaces(5) file used by ifup(8) and ifdown(8)
+# Include files from /etc/network/interfaces.d:
+source /etc/network/interfaces.d/*
+
+allow-hotplug ap0
+allow-hotplug ap1
+allow-hotplug eth0
+
+auto br0
+iface br0 inet manual
+	bridge_ports eth0
+	bridge_stp off
+	# address 5.9.0.1
+	# netmask 255.255.255.0
+	# gateway 5.9.0.254
+	# broadcast 5.9.0.255
